@@ -13,6 +13,7 @@ requests = "*"
 torch = "*"
 transformers = "*"
 numpy = "*"
+networkx = "*"
 
 [requires]
 python_version = "3.6"
