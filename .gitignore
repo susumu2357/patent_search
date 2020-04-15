@@ -129,4 +129,4 @@ dmypy.json
 .pyre/
 
 # My development folder
-My_Dev/
+/My_Dev/
