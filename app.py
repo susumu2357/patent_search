@@ -8,26 +8,20 @@ import requests
 import pickle
 import gzip
 import copy 
-import multiprocessing
 import math
 from collections import defaultdict
 import networkx as nx
-
-import torch
-from torch.utils.data import Dataset, DataLoader
-from transformers import AlbertTokenizer
-from transformers import AlbertForSequenceClassification
 
 import dash
 import dash_table
 import dash_core_components as dcc
 import dash_html_components as html
-from dash.dependencies import Input, Output, State
+from dash.dependencies import Input, Output
 import plotly.graph_objects as go
 
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 
-app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
+app = dash.Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
 server = app.server
 
 def load_pickle(url):
@@ -38,85 +32,11 @@ def load_pickle(url):
 
 references = load_pickle("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/references_20200413.pkl.gz")
 df = load_pickle("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/df_part_20200413.pkl.gz")
-if not os.path.exists("./config.json"):
-    response = requests.get("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/config.json")
-    with open("./config.json", 'wb') as saveFile:
-        saveFile.write(response.content)
-if not os.path.exists("./pytorch_model.bin"):
-    response = requests.get("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/pytorch_model.bin")
-    with open("./pytorch_model.bin", 'wb') as saveFile:
-        saveFile.write(response.content)
+sentences = load_pickle("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/sentences_body.pkl.gz")
+sorted_sim = load_pickle("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/sorted_sim_body.pkl.gz")
+reduced_vec = load_pickle("https://storage.googleapis.com/mlstudy-phys/20200415_patent_search/body_reduced_vec.pkl.gz")
 
-model = AlbertForSequenceClassification.from_pretrained('./')
-# print(model)
-
-def abstract_preprocess(text):
-    text = text.lower()
-    text = text.translate(str.maketrans('','',string.punctuation))
-    text = " ".join([w for w in text.split() if not re.match(r"^[0-9]{1,5}[a-z]$|^[0-9]{1,5}.*[0-9]$|^\(.*\)$|\\n|\\t|^\\", w)])    
-    return re.sub("^abstract ","", text)
-
-def set_pair(input_sentence):
-    input_sentence = abstract_preprocess(input_sentence)
-    pair = []
-    for num in df.index:
-        text_a = df.at[num, "preprocessed_abstract"]
-        text_b = input_sentence
-        pair.append([text_a, text_b])
-    return pair
-    
-class PairDataset(Dataset):
-    def __init__(self, input_ids, token_type_ids, attention_mask):
-        self.input_ids = input_ids
-        self.token_type_ids = token_type_ids
-        self.attention_mask = attention_mask
-
-    def __len__(self):
-        return len(self.input_ids)
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        one_token = self.input_ids[idx]
-        one_token_type = self.token_type_ids[idx]
-        one_mask = self.attention_mask[idx]
-
-#         device = torch.device("cuda")
-        device = torch.device("cpu")
-        sample = {'input_ids': torch.tensor(one_token, device=device), 
-                'token_type_ids': torch.tensor(one_token_type, device=device), 
-                'attention_mask': torch.tensor(one_mask, device=device)
-                }
-        return sample
-
-BATCH = 4
-def calc_rank(target_sentence):
-    torch.set_num_threads(multiprocessing.cpu_count())
-    model.eval()
-    prob = []
-
-    test_pair = set_pair(target_sentence)
-    tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-    token = tokenizer.batch_encode_plus(test_pair, add_special_tokens=True, 
-    return_token_type_ids=True, max_length=512, return_attention_masks=True, pad_to_max_length=True)
-    test_dataset = PairDataset(token["input_ids"], token["token_type_ids"], token["attention_mask"])
-    test_dataloader = DataLoader(test_dataset, batch_size=BATCH, shuffle=False)
-
-    with torch.no_grad():
-        for i, data in enumerate(test_dataloader, 0):
-            input_ids = data["input_ids"]
-            token_type_ids = data["token_type_ids"]
-            attention_mask = data["attention_mask"]
-
-            logits, = model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
-            prob += torch.softmax(logits, dim=1).tolist()
-
-            if i%10==9:
-                print("{} done".format((i+1)*BATCH))
-    result = [(num, elm[1]) for num, elm in zip(df.index, prob)]
-    sorted_result = sorted(result, key=lambda x:x[1], reverse=True)
-    return sorted_result
+sentence_id = {v:k for v, k in enumerate(sentences.keys())}
 
 node_dict=defaultdict(int)
 tmp_list = []
@@ -142,63 +62,96 @@ target = i
 num_to_id_dict = {v:k for k,v in node_dict.items()}
 
 app.layout = html.Div([
-    html.H1("Patent citation network"),
-    html.P(["This is a demonstration of using ALBERT (", html.A("arXiv:1909.11942", href="https://arxiv.org/abs/1909.11942", target="_blank"), 
-    ") to extract literature similar to the input sentences and display it on the network graph."]),
+    html.H1("Patent Map"),
+    html.P(["This is a demonstration of feature extraction using ALBERT (", html.A("arXiv:1909.11942", href="https://arxiv.org/abs/1909.11942", target="_blank"), 
+    ")."]),
     html.P(["In this demo, patent literature relating to faster R-CNN (", html.A("arXiv:1506.01497", href="https://arxiv.org/abs/1506.01497", target="_blank"), 
-    ") are used."]),
+    ") are presented."]),
+    dcc.Tabs(id='tabs', value='tab-1', children=[
+        dcc.Tab(label='Citation Network', value='tab-1'),
+        dcc.Tab(label='Embedding Map', value='tab-2'),
+    ]),
+    html.Div(id='tabs-content')
+])
+
+@app.callback(Output('tabs-content', 'children'),
+              [Input('tabs', 'value')])
+def render_content(tab):
+    if tab == 'tab-1':
+        return tab1
+    elif tab == 'tab-2':
+        return tab2
+
+tab1 = html.Div([
      html.Div([
+         html.P("Links between patent literature represent forward citation. Size and color of marker represent citation count."),
          dcc.Graph(id='graph')
         ],style={'width': '48%', 'display': 'inline-block'}),
 
     html.Div([
-         html.P("Enter the number of references you want the link to appear in."),
+         html.P("Enter the number of references you want the link to appear in. Links between the input sentence and patent literature represent connections with similar patent literature."),
          dcc.Input(
                 id="top_N",
                 type="number",
                 value=10,
                 placeholder="input number",
                 ),
-         html.P("Input the sentence you want to search."),
-         dcc.Textarea(
-             id='target_sentence',
-             value='',
-             style={'width': '90%', 'height': 200},
-             ),
-         html.P(["Due to machine resource limitations, the process takes ", html.B("10 minitues"), " or more."]),
-         html.Button('Submit', id='button', n_clicks=0),
+         html.P("Select the sentence you want to search."),
+         html.P("In this demo, underlying technologies behind the Faster R-CNN are listed as the input sentences."),
+         dcc.Dropdown(
+                id="target_sentence",
+                options=[{'label': t, 'value': i} for i, t in enumerate(sentences.keys())],
+                value=0
+            ),
+         html.Blockquote(id='text_output', style={'backgroundColor':"#DCDCDC"}),
          html.H2("Selected references"),
          html.P(["Shift+click will accumulate the selected reference. You can also use ", html.I("Box Select "), "or ", html.I("Lasso Select "), "to select multiple references."]),
          html.Div([html.Div(id='table')])
         ],style={'width': '48%', 'float': 'right', 'display': 'inline-block'})
 ])
 
+tab2 = html.Div([
+     html.Div([
+         html.P("Size and color of marker represent citation count."),
+         dcc.Graph(id='map')
+        ],style={'width': '48%', 'display': 'inline-block'}),
+
+    html.Div([
+         html.P("Select the sentence you want to show."),
+         html.P("In this demo, underlying technologies behind the Faster R-CNN are listed as the input sentences."),
+         dcc.Dropdown(
+                id="target_sentence_2",
+                options=[{'label': t, 'value': i} for i, t in enumerate(sentences.keys())],
+                value=[0],
+                multi=True
+            ),
+         html.Blockquote(id='text_output_2', style={'backgroundColor':"#DCDCDC"}),
+         html.H2("Selected references"),
+         html.P(["Shift+click will accumulate the selected reference. You can also use ", html.I("Box Select "), "or ", html.I("Lasso Select "), "to select multiple references."]),
+         html.Div([html.Div(id='table_2')])
+        ],style={'width': '48%', 'float': 'right', 'display': 'inline-block'})
+])
+
 @app.callback(
     Output(component_id='graph', component_property='figure'),
     [Input(component_id='top_N', component_property='value'),
-    Input(component_id='button', component_property='n_clicks')],
-    [State('target_sentence', 'value')])
-def update_figure(top_N, n_clicks, target_sentence):
+    Input(component_id='target_sentence', component_property='value')])
+def update_figure(top_N, value):
     edge_list = copy.copy(tmp_list)
-    if n_clicks > 0:
-        if target_sentence != "":
-            sorted_result = calc_rank(target_sentence)
+    sorted_result = copy.copy(sorted_sim[sentence_id[value]])
 
-            j = 0
-            for elm in sorted_result:
-                n = node_dict[elm[0]]
-                if n > 0:
-                    edge_list.append( (target, n) )
-                    j += 1
-                if j >= top_N:
-                    break
+    j = 0
+    for m in range(50):
+        n = node_dict[sorted_result[m][0]]
+        if n > 0:
+            edge_list.append( (target, n) )
+            j += 1
+        if j >= top_N:
+            break
 
     G = nx.Graph()
     G.add_edges_from(edge_list)
-    if target_sentence != "":
-        pos = nx.spring_layout(G, k=1.2/math.log2(len(edge_list)), pos={target:(0,0)}, fixed=[target] )
-    else:
-        pos = nx.spring_layout(G, k=1.2/math.log2(len(edge_list))) 
+    pos = nx.spring_layout(G, k=1.2/math.log2(len(edge_list)), pos={target:(0,0)}, fixed=[target] )
 
     for node in G.nodes:
         G.nodes[node]['pos'] = pos[node]
@@ -280,19 +233,18 @@ def update_figure(top_N, n_clicks, target_sentence):
                 )
 
     annotations = []
-    if target_sentence != "":
-        X, Y = G.nodes[target]['pos']
-        theta = math.atan2(Y, X)
-        r = max([(X**2 + Y**2)**0.5, 0.1])
-        d = dict(
-            x=X,
-            y=Y,
-            text="Input sentence",
-            showarrow=True,
-            arrowhead=7,
-            ax=10*math.cos(theta) * r**-1,
-            ay=-10*math.sin(theta) * r**-1)
-        annotations.append(d)
+    X, Y = G.nodes[target]['pos']
+    theta = math.atan2(Y, X)
+    r = max([(X**2 + Y**2)**0.5, 0.1])
+    d = dict(
+        x=X,
+        y=Y,
+        text="Input sentence",
+        showarrow=True,
+        arrowhead=7,
+        ax=10*math.cos(theta) * r**-1,
+        ay=-10*math.sin(theta) * r**-1)
+    annotations.append(d)
 
     fig.update_layout(
         showlegend=False,
@@ -301,8 +253,94 @@ def update_figure(top_N, n_clicks, target_sentence):
     return fig
 
 @app.callback(
+    Output(component_id='text_output', component_property='children'),
+    [Input(component_id='target_sentence', component_property='value')]
+)
+def update_output_div(value):
+    return html.P(sentences[sentence_id[value]])
+
+@app.callback(
     [Output(component_id='table', component_property='children')],
     [Input('graph', 'selectedData')])
+def display_click_data(selectedData):
+    if selectedData is not None:
+        num_list = [elm["text"].split(sep=",")[0] for elm in selectedData["points"] if elm["text"].split(sep=",")[0] != "Input sentence"]
+        url_list = ["https://patents.google.com//patent/" + num + "/en" for num in num_list]
+
+        tmp = [html.Tr([html.Th(elm) for elm in ["URL", "assignee", "priority_date", "abstract"]])]
+        for num, url in zip(num_list, url_list):
+            elm_list = [url] + df[df.index == num][["assignee", "priority_date", "abstract"]].values[0].tolist()
+            tmp.append(html.Tr([html.Td(html.A(elm.split(sep="/")[-2], href=elm, target="_blank")) if i == 0 else html.Td(elm) for i, elm in enumerate(elm_list)]))
+        out_table = html.Table(tmp)
+        return [out_table]
+    else:
+        return [html.Tr([html.Td("") for _ in range(4)])]
+
+@app.callback(
+    Output(component_id='map', component_property='figure'),
+    [Input(component_id='target_sentence_2', component_property='value')])
+def update_map(value):
+    index = list(range(433)) + [elm + 433 for elm in value]
+    vec_df = reduced_vec.iloc[index]
+    node_trace = go.Scatter(
+        x=vec_df["PCA_1"], 
+        y=vec_df["PCA_2"], 
+        mode='markers',
+        hoverinfo='text',
+        text = ["{}, {}".format(num, a) for num, a in zip(vec_df["id"], vec_df["assignee"])],
+        marker=dict(
+            showscale=True,
+            # colorscale options
+            #'Greys' | 'YlGnBu' | 'Greens' | 'YlOrRd' | 'Bluered' | 'RdBu' |
+            #'Reds' | 'Blues' | 'Picnic' | 'Rainbow' | 'Portland' | 'Jet' |
+            #'Hot' | 'Blackbody' | 'Earth' | 'Electric' | 'Viridis' |
+            colorscale='Portland',
+            reversescale=True,
+            color=vec_df["forward_citation_count"],
+            size=vec_df["size"],
+            colorbar=dict(
+                thickness=15,
+                title='Forward Citation Count',
+                xanchor='left',
+                titleside='right'
+            ),
+            line_width=2))
+
+    fig = go.Figure(data=[node_trace],
+             layout=go.Layout(
+                showlegend=False,
+                hovermode='closest',
+                clickmode='event+select',
+                margin=dict(b=20,l=5,r=5,t=40),
+                # xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                # yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                # width=1000, 
+                height=800
+                ))
+
+    fig.update_layout(
+        showlegend=False,
+        annotations=[
+            dict(
+                x=vec_df["PCA_1"][l],
+                y=vec_df["PCA_2"][l],
+                xref="x",
+                yref="y",
+                text=sentence_id[l-433],
+                showarrow=True,
+                arrowhead=7,
+                ax=10*math.cos(math.atan2(vec_df["PCA_2"][l], vec_df["PCA_1"][l])) 
+                * max([(vec_df["PCA_1"][l]**2 + vec_df["PCA_2"][l]**2)**0.5, 0.1])**-1,
+                ay=-10*math.sin(math.atan2(vec_df["PCA_2"][l], vec_df["PCA_1"][l])) 
+                * max([(vec_df["PCA_1"][l]**2 + vec_df["PCA_2"][l]**2)**0.5, 0.1])**-1
+            )
+        for l in [elm + 433 for elm in value]]
+    )
+    return fig
+
+@app.callback(
+    [Output(component_id='table_2', component_property='children')],
+    [Input('map', 'selectedData')])
 def display_click_data(selectedData):
     if selectedData is not None:
         num_list = [elm["text"].split(sep=",")[0] for elm in selectedData["points"] if elm["text"].split(sep=",")[0] != "Input sentence"]

@@ -4,16 +4,17 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 
 [dev-packages]
+torch = "*"
+transformers = "*"
+scikit-learn = "*"
 
 [packages]
 dash = "*"
 gunicorn = "*"
 pandas = "*"
 requests = "*"
-transformers = "*"
 numpy = "*"
 networkx = "*"
-torch = {file = "https://download.pytorch.org/whl/nightly/cpu/torch-1.4.0.dev20191015+cpu-cp36-cp36m-linux_x86_64.whl"}
 
 [requires]
 python_version = "3.6"
