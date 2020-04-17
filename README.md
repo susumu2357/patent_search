@@ -1,5 +1,5 @@
 # patent map
 This is a repository of demo app using plotly Dash.
 
-Dployed app: 
+Deployed app: 
 https://patent-network-search-demo.herokuapp.com/
